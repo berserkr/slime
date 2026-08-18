@@ -5,6 +5,33 @@ from slime.utils.processing_utils import encode_image_for_rollout_engine
 from slime.utils.types import Sample
 
 
+def _resolve_teacher_url(args, sample):
+    """Pick the teacher endpoint for this sample (MOPD multi-teacher routing).
+
+    Single-teacher (no map configured): return ``args.rm_url`` — unchanged upstream
+    behavior. Multi-teacher: read the teacher name from
+    ``sample.metadata[args.opd_routing_key]`` and look it up in
+    ``args.opd_teacher_url_map``. One teacher scores the whole trajectory.
+    """
+    url_map = getattr(args, "opd_teacher_url_map", None)
+    if not url_map:
+        return args.rm_url
+    routing_key = getattr(args, "opd_routing_key", "teacher")
+    metadata = sample.metadata or {}
+    name = metadata.get(routing_key)
+    if name is None:
+        raise ValueError(
+            f"MOPD routing: sample is missing metadata[{routing_key!r}]. "
+            f"Every prompt must carry a teacher tag; known teachers: {list(url_map)}."
+        )
+    if name not in url_map:
+        raise ValueError(
+            f"MOPD routing: teacher {name!r} not in --opd-teacher-urls {list(url_map)}. "
+            f"Fix the prompt's metadata.{routing_key} or the launch map."
+        )
+    return url_map[name]
+
+
 async def reward_func(args, sample, **kwargs):
     payload = {
         # "text": sample.prompt + sample.response,
@@ -24,7 +51,7 @@ async def reward_func(args, sample, **kwargs):
 
     session_kwargs = {}
     async with aiohttp.ClientSession(**session_kwargs) as session:
-        async with session.post(args.rm_url, json=payload) as resp:
+        async with session.post(_resolve_teacher_url(args, sample), json=payload) as resp:
             resp.raise_for_status()
             return await resp.json()
 

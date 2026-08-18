@@ -1155,6 +1155,27 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
             )
+            parser.add_argument(
+                "--opd-teacher-urls",
+                type=str,
+                default=None,
+                help=(
+                    "MOPD multi-teacher routing (opd-type=sglang only). Comma-separated "
+                    "name=url pairs, e.g. "
+                    "'math=http://h1:8001/generate,code=http://h2:8002/generate'. "
+                    "When set, the teacher is chosen per sample via --opd-routing-key "
+                    "instead of the single --rm-url."
+                ),
+            )
+            parser.add_argument(
+                "--opd-routing-key",
+                type=str,
+                default="teacher",
+                help=(
+                    "Which sample.metadata key holds the teacher name for MOPD routing. "
+                    "Default 'teacher' (reads sample.metadata['teacher'])."
+                ),
+            )
             return parser
 
         # wandb
@@ -1764,6 +1785,39 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+def _parse_teacher_url_map(opd_teacher_urls):
+    """Parse ``--opd-teacher-urls`` into a teacher-name -> url dict for MOPD routing.
+
+    Accepts a comma-separated string of ``name=url`` pairs, e.g.
+    ``"math=http://h1:8001/generate,code=http://h2:8002/generate"``. Returns ``None``
+    when no value is given (single-teacher mode via ``--rm-url``). Raises ``ValueError``
+    on a malformed entry (no ``=``), an empty name or url, a duplicate teacher name, or
+    an all-empty map.
+    """
+    if not opd_teacher_urls:
+        return None
+    url_map = {}
+    for pair in opd_teacher_urls.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise ValueError(
+                f"--opd-teacher-urls entry {pair!r} is malformed; "
+                "expected 'name=url' pairs separated by commas."
+            )
+        name, url = pair.split("=", 1)
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            raise ValueError(f"--opd-teacher-urls entry {pair!r} has an empty name or url.")
+        if name in url_map:
+            raise ValueError(f"--opd-teacher-urls has a duplicate teacher name {name!r}.")
+        url_map[name] = url
+    if not url_map:
+        raise ValueError("--opd-teacher-urls was set but parsed to an empty map.")
+    return url_map
+
+
 def slime_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -1803,6 +1857,14 @@ def slime_validate_args(args):
                 raise ValueError(
                     "--opd-teacher-load should not be set when --opd-type=sglang. "
                     "In sglang mode, teacher log-probs are obtained from external server during rollout."
+                )
+
+            # MOPD: build the teacher name -> url map (None => single-teacher via --rm-url)
+            args.opd_teacher_url_map = _parse_teacher_url_map(args.opd_teacher_urls)
+            if args.opd_teacher_url_map is None and args.rm_url is None:
+                raise ValueError(
+                    "opd-type=sglang requires either --rm-url (single teacher) or "
+                    "--opd-teacher-urls (multi-teacher routing)."
                 )
     else:
         # If OPD is not enabled, opd_teacher_load should not be set
