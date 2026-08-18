@@ -78,6 +78,34 @@ MOPD routing is driven entirely by a **`metadata.teacher`** field on each prompt
 slime's training loader (`slime/utils/data.py`) copies each jsonl row's `metadata`
 object straight onto `sample.metadata`, so this works with **no code change**.
 
+### How a teacher tag maps to a URL (read this first)
+
+The word "teacher" plays **two different roles** — this is the #1 setup gotcha:
+
+```
+--opd-routing-key   "teacher"              which metadata KEY to read   (default; a field name)
+        │
+        ▼
+sample.metadata["teacher"] == "math"       the VALUE in that key        (from your jsonl row)
+        │
+        ▼  exact, case-sensitive dict lookup on the VALUE
+        │
+--opd-teacher-urls  "math=http://h1:8001/generate,code=http://h2:8002/generate"
+                     ^^^^                                                          the matching NAME
+        │
+        ▼
+POST http://h1:8001/generate               the resolved teacher endpoint
+```
+
+- `--opd-routing-key` names **which field** to read (default `teacher`). It is *not* the
+  thing that gets matched.
+- The **value** at that field (`"math"`) is what must equal one of the **names** on the
+  left of your `name=url` pairs. The match is exact and case-sensitive — `"Math"` or
+  `"math "` will not match `math`.
+- Therefore the left-hand names in `--opd-teacher-urls` **are the vocabulary of tags your
+  dataset is allowed to use.** Any `metadata.teacher` value not in that set raises a
+  `ValueError` at rollout time naming the unknown tag.
+
 ### Row format
 
 Each line of your `--prompt-data` jsonl:
@@ -91,8 +119,9 @@ Each line of your `--prompt-data` jsonl:
 - `input` — the prompt (key set by `--input-key`, default `input`).
 - `label` — optional; only needed if you also compute a **task reward** (verifiable RLVR).
   For pure distillation, `label` can be omitted/null.
-- `metadata.teacher` — **the routing key.** Its value must match a teacher name you
-  register at launch (Step 3). This is the only field MOPD adds.
+- `metadata.teacher` — **the routing field.** Its *value* must exactly match one of the
+  teacher *names* you register in `--opd-teacher-urls` at launch (Step 3; see the mapping
+  diagram above). This is the only field MOPD adds.
 
 ### One file or many?
 
