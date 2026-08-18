@@ -174,6 +174,74 @@ in Step 4.
 
 ---
 
+## Quickstart — the provided run scripts (single & dual teacher)
+
+The routing patch is **already applied on this branch** (see
+[`MT_PATCH.md`](MT_PATCH.md)). If you just want to run it, use the ready-made scripts in
+[`scripts/`](scripts/) instead of wiring the commands by hand. They split serving from
+training: one script stands up **one** SGLang endpoint, and a trainer script waits for
+the endpoint(s) to be healthy and then launches slime.
+
+| Script | Role | Starts a server? |
+|---|---|---|
+| `scripts/serve_teacher.sh` | stand up **one** SGLang teacher endpoint | ✅ run once per teacher |
+| `scripts/train_opd_1teacher.sh` | wait for one endpoint, train with `--rm-url` | ❌ uses it |
+| `scripts/train_opd_2teachers.sh` | wait for two endpoints, train with `--opd-teacher-urls` (routing) | ❌ uses them |
+
+Edit the `# EDIT ME` block at the top of the trainer scripts to point at your model
+script (`scripts/models/*.sh`), student checkpoints, and prompt data first.
+
+### Single instance — 1 node, 4× GB200
+
+Layout: **GPU 3 = teacher, GPUs 0–2 = training + student rollout (colocated).**
+
+```bash
+# terminal 1 — bring the teacher up (stays foreground; prints "is UP" when ready)
+MODEL_PATH=/root/models/teacher GPUS=3 PORT=13141 \
+  bash examples/on_policy_distillation/scripts/serve_teacher.sh
+
+# terminal 2 — once the teacher prints "is UP"
+bash examples/on_policy_distillation/scripts/train_opd_1teacher.sh
+```
+
+No data tagging needed here — a single teacher scores every trajectory.
+
+### Dual instance — 1 node, 4× GB200
+
+Layout: **GPU 2 = teacher_a, GPU 3 = teacher_b, GPUs 0–1 = training + rollout.**
+
+```bash
+# terminal 1 — teacher A
+TEACHER_NAME=teacher_a MODEL_PATH=/root/models/teacher-math \
+  GPUS=2 PORT=13141 bash examples/on_policy_distillation/scripts/serve_teacher.sh
+
+# terminal 2 — teacher B
+TEACHER_NAME=teacher_b MODEL_PATH=/root/models/teacher-code \
+  GPUS=3 PORT=13142 bash examples/on_policy_distillation/scripts/serve_teacher.sh
+
+# terminal 3 — once BOTH print "is UP"
+bash examples/on_policy_distillation/scripts/train_opd_2teachers.sh
+```
+
+For the dual case, **every prompt row must carry `metadata.teacher`** equal to one of the
+teacher names (`teacher_a`/`teacher_b`) — see Step 1. An untagged or unknown-tag row
+raises `ValueError` at rollout time. The trainer passes
+`--opd-teacher-urls "teacher_a=…:13141/generate,teacher_b=…:13142/generate"` and
+`--opd-routing-key teacher` for you.
+
+> **Just testing routing?** Point both `MODEL_PATH`s at the *same* checkpoint. Both
+> endpoints receive traffic (proving the router works) while `opd_reverse_kl` stays near 0
+> (self-distillation). This is exactly what the integration test
+> `tests/test_qwen2.5_0.5B_mopd_multi_teacher_sglang.py` does.
+
+**Scaling the split:** each teacher above uses 1 GB200 (`TP=1`). For a larger teacher,
+give `serve_teacher.sh` more ids (`GPUS=2,3`, which auto-sets `TP=2`) and move teachers to
+a second node; then shrink `TRAIN_GPUS` accordingly (the trainer derives
+`--actor-num-gpus-per-node` from it). Bump `--tensor-model-parallel-size` /
+`--expert-model-parallel-size` in the trainer for a large MoE student.
+
+---
+
 ## Step 3 — Implementing the routing patch
 
 Upstream slime resolves a **single** teacher endpoint (`args.rm_url`). Multi-teacher
@@ -238,9 +306,41 @@ The `sglang` branch currently only guards `--opd-teacher-load` (around line 1801
                 )
 ```
 
-Extend that `sglang` branch to build `args.opd_teacher_url_map`. Parse defensively
-(strip whitespace, reject malformed/empty pairs) so a typo fails fast at startup rather
-than mid-rollout:
+Parsing is factored into a small, unit-testable module-level helper so it can be tested
+without running full argument validation. Add it just above `def slime_validate_args(args):`:
+
+```python
+def _parse_teacher_url_map(opd_teacher_urls):
+    """Parse ``--opd-teacher-urls`` into a teacher-name -> url dict for MOPD routing.
+
+    Returns ``None`` when unset (single-teacher mode via ``--rm-url``). Parses
+    defensively so a typo fails fast at startup rather than mid-rollout.
+    """
+    if not opd_teacher_urls:
+        return None
+    url_map = {}
+    for pair in opd_teacher_urls.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise ValueError(
+                f"--opd-teacher-urls entry {pair!r} is malformed; "
+                "expected 'name=url' pairs separated by commas."
+            )
+        name, url = pair.split("=", 1)          # split on FIRST '=' so URLs with ?k=v survive
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            raise ValueError(f"--opd-teacher-urls entry {pair!r} has an empty name or url.")
+        if name in url_map:
+            raise ValueError(f"--opd-teacher-urls has a duplicate teacher name {name!r}.")
+        url_map[name] = url
+    if not url_map:
+        raise ValueError("--opd-teacher-urls was set but parsed to an empty map.")
+    return url_map
+```
+
+Then, in the `sglang` branch of the OPD validation block, call it and add the XOR guard:
 
 ```python
         elif args.opd_type == "sglang":
@@ -251,31 +351,8 @@ than mid-rollout:
                 )
 
             # MOPD: build the teacher name -> url map (None => single-teacher via --rm-url)
-            args.opd_teacher_url_map = None
-            if args.opd_teacher_urls:
-                url_map = {}
-                for pair in args.opd_teacher_urls.split(","):
-                    pair = pair.strip()
-                    if not pair:
-                        continue
-                    if "=" not in pair:
-                        raise ValueError(
-                            f"--opd-teacher-urls entry {pair!r} is malformed; "
-                            "expected 'name=url' pairs separated by commas."
-                        )
-                    name, url = pair.split("=", 1)
-                    name, url = name.strip(), url.strip()
-                    if not name or not url:
-                        raise ValueError(
-                            f"--opd-teacher-urls entry {pair!r} has an empty name or url."
-                        )
-                    if name in url_map:
-                        raise ValueError(f"--opd-teacher-urls has a duplicate teacher name {name!r}.")
-                    url_map[name] = url
-                if not url_map:
-                    raise ValueError("--opd-teacher-urls was set but parsed to an empty map.")
-                args.opd_teacher_url_map = url_map
-            elif args.rm_url is None:
+            args.opd_teacher_url_map = _parse_teacher_url_map(args.opd_teacher_urls)
+            if args.opd_teacher_url_map is None and args.rm_url is None:
                 raise ValueError(
                     "opd-type=sglang requires either --rm-url (single teacher) or "
                     "--opd-teacher-urls (multi-teacher routing)."
@@ -287,9 +364,13 @@ already rejects a stray `--opd-teacher-load`. You don't need to guard `--opd-tea
 there — it simply has no effect when `--use-opd` is off — but you may add a symmetric
 warning if you want misconfig to be loud.
 
-> **Why set `args.opd_teacher_url_map = None` explicitly?** So the rollout code can do a
-> plain `getattr(args, "opd_teacher_url_map", None)` and treat "attribute missing"
-> (megatron mode, or older configs) and "no map" identically — single-teacher behavior.
+> **Why the `getattr(..., None)` on the rollout side?** In sglang mode the validator always
+> sets `args.opd_teacher_url_map` (possibly `None`). In megatron mode (or older configs) the
+> attribute never gets set, so the resolver uses `getattr(args, "opd_teacher_url_map", None)`
+> to treat "attribute missing" and "no map" identically — single-teacher behavior.
+>
+> Setting both `--rm-url` and `--opd-teacher-urls` is not an error: the map wins and
+> `--rm-url` is ignored (the resolver only falls back to `rm_url` when the map is empty).
 
 ### 3c. Route per sample — `slime/rollout/on_policy_distillation.py`
 
@@ -334,7 +415,7 @@ def _resolve_teacher_url(args, sample):
     if name is None:
         raise ValueError(
             f"MOPD routing: sample is missing metadata[{routing_key!r}]. "
-            f"Every prompt row must carry a teacher tag; known teachers: {list(url_map)}."
+            f"Every prompt must carry a teacher tag; known teachers: {list(url_map)}."
         )
     if name not in url_map:
         raise ValueError(
