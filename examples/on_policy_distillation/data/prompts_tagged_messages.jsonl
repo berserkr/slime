@@ -1,0 +1,3 @@
+{"messages": [{"role": "user", "content": "Solve: the integral of x^2 dx."}], "label": "x^3/3 + C", "metadata": {"teacher": "math"}}
+{"messages": [{"role": "system", "content": "You are a careful software engineer."}, {"role": "user", "content": "Write a Python function to check if a string is a palindrome."}], "label": null, "metadata": {"teacher": "code"}}
+{"messages": [{"role": "user", "content": "Explain photosynthesis to a 10 year old."}], "label": null, "metadata": {"teacher": "general"}}

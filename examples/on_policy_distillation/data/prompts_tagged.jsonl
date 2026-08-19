@@ -1,0 +1,6 @@
+{"prompt": "What is the derivative of x^3 + 2x with respect to x?", "label": "3x^2 + 2", "metadata": {"teacher": "math"}}
+{"prompt": "Compute the integral of 2x dx.", "label": "x^2 + C", "metadata": {"teacher": "math"}}
+{"prompt": "Solve for x: 3x + 5 = 20.", "label": "5", "metadata": {"teacher": "math"}}
+{"prompt": "Write a Python function that returns the n-th Fibonacci number.", "label": null, "metadata": {"teacher": "code"}}
+{"prompt": "Reverse a singly linked list in place and return the new head.", "label": null, "metadata": {"teacher": "code"}}
+{"prompt": "Given a list of integers, write a function that returns the two numbers that sum to a target.", "label": null, "metadata": {"teacher": "code"}}

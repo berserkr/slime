@@ -14,10 +14,10 @@
 #
 # ---- run order ---------------------------------------------------------------
 #   # terminal 1:
-#   TEACHER_NAME=teacher_a MODEL_PATH=/root/models/teacher-math \
+#   TEACHER_NAME=math MODEL_PATH=/root/models/teacher-math \
 #     GPUS=2 PORT=13141 bash .../serve_teacher.sh
 #   # terminal 2:
-#   TEACHER_NAME=teacher_b MODEL_PATH=/root/models/teacher-code \
+#   TEACHER_NAME=code MODEL_PATH=/root/models/teacher-code \
 #     GPUS=3 PORT=13142 bash .../serve_teacher.sh
 #   # terminal 3 (once both print "is UP"):
 #   bash examples/on_policy_distillation/scripts/train_opd_2teachers.sh
@@ -25,21 +25,23 @@
 # ---- knobs (env vars) ---------------------------------------------------------
 #   TEACHER_A_URL  Default http://127.0.0.1:13141/generate
 #   TEACHER_B_URL  Default http://127.0.0.1:13142/generate
-#   TEACHER_A_NAME Default "teacher_a"   } these NAMES are the vocabulary your data's
-#   TEACHER_B_NAME Default "teacher_b"   } metadata.teacher values must match exactly.
+#   TEACHER_A_NAME Default "math"   } these NAMES are the vocabulary your data's
+#   TEACHER_B_NAME Default "code"   } metadata.teacher values must match exactly.
 #   TRAIN_GPUS     Default "0,1"
 #
 # ---- data requirement (important) --------------------------------------------
 #   Every prompt row must carry metadata.teacher set to one of the teacher NAMES,
-#   e.g.  {"prompt": "...", "metadata": {"teacher": "teacher_a"}}
+#   e.g.  {"prompt": "...", "metadata": {"teacher": "math"}}
 #   An untagged row (or an unknown name) raises ValueError at rollout time.
+#   A ready-made sample lives at examples/on_policy_distillation/data/prompts_tagged.jsonl
+#   (tagged math/code) — the PROMPT_DATA default below points at it.
 # =============================================================================
 set -euo pipefail
 
 TEACHER_A_URL="${TEACHER_A_URL:-http://127.0.0.1:13141/generate}"
 TEACHER_B_URL="${TEACHER_B_URL:-http://127.0.0.1:13142/generate}"
-TEACHER_A_NAME="${TEACHER_A_NAME:-teacher_a}"
-TEACHER_B_NAME="${TEACHER_B_NAME:-teacher_b}"
+TEACHER_A_NAME="${TEACHER_A_NAME:-math}"
+TEACHER_B_NAME="${TEACHER_B_NAME:-code}"
 TRAIN_GPUS="${TRAIN_GPUS:-0,1}"
 NUM_TRAIN_GPUS="$(awk -F, '{print NF}' <<<"$TRAIN_GPUS")"
 
@@ -49,7 +51,8 @@ MODEL_SCRIPT="${MODEL_SCRIPT:-${SLIME_DIR}/scripts/models/qwen3-8B.sh}"  # defin
 STUDENT_HF="${STUDENT_HF:-/root/models/student}"
 STUDENT_REF="${STUDENT_REF:-/root/models/student_torch_dist}"
 STUDENT_SAVE="${STUDENT_SAVE:-/root/models/student_slime}"
-PROMPT_DATA="${PROMPT_DATA:-/root/datasets/prompts_tagged.jsonl}"        # rows carry metadata.teacher
+# Default points at the bundled math/code sample; swap for your own tagged jsonl.
+PROMPT_DATA="${PROMPT_DATA:-${SLIME_DIR}/examples/on_policy_distillation/data/prompts_tagged.jsonl}"
 # ----------------------------------------------------------------------------- #
 
 export PYTHONUNBUFFERED=1

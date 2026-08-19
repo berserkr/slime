@@ -37,6 +37,9 @@ This example shows how to run **on-policy distillation (OPD)** using slime. A sm
 - `run-qwen3-8B-opd.sh` launches an SGLang teacher server, then submits a Ray job that runs `train.py`.
 - `run-qwen3-8B-opd-megatron.sh` uses Megatron-loaded teacher model (no external server needed).
 - `scripts/` — split server/trainer scripts for multi-teacher runs: `serve_teacher.sh` (stand up one SGLang endpoint), `train_opd_1teacher.sh` (single teacher via `--rm-url`), `train_opd_2teachers.sh` (routing via `--opd-teacher-urls`). See [MOPD_GETTING_STARTED.md](MOPD_GETTING_STARTED.md) for the single/dual-instance quickstart on a 4×GB200 node.
+  - `serve_sglang.sh` / `test_inference.sh` — generic (non-OPD) helpers to bring up any HF model on SGLang and smoke-test the endpoint. See **[Testing an SGLang endpoint](#testing-an-sglang-endpoint)** below.
+- `run-tau-bench-opd.sh` + `tau_bench_opd.py` — train the **agentic** tau-bench example with OPD (task reward + teacher KL, or pure distillation). See **[Agentic training (tau-bench) with OPD](#agentic-training-tau-bench-with-opd)** below.
+- `tests/test_opd_teacher_hook.py` — offline unit test (no GPU) for the `opd_teacher_hook` glue: runs the hook against a real local aiohttp teacher and asserts the trimmed `teacher_log_probs`, the eval short-circuit, and multi-teacher routing. Run with `PYTHONPATH=examples/on_policy_distillation python -m pytest examples/on_policy_distillation/tests/test_opd_teacher_hook.py -v`.
 
 ## Running the example
 
@@ -114,6 +117,76 @@ Route each trajectory to a specialist teacher by tagging prompts. Full walkthrou
 
 For a one-node 4×GB200 quickstart (single and dual teacher), use the ready-made scripts —
 see the **Quickstart** section of [MOPD_GETTING_STARTED.md](MOPD_GETTING_STARTED.md).
+
+## Testing an SGLang endpoint
+
+Before wiring a checkpoint into a training run, sanity-check that it serves and responds.
+Two generic helpers in `scripts/` do this — they are **not** OPD-specific, so you can point
+them at any HF model:
+
+- `serve_sglang.sh` — load a model on an SGLang server (bind, health-check, print URLs, hold foreground).
+- `test_inference.sh` — fire health / model-info / `/generate` / `/v1/chat/completions` requests and exit non-zero on any failure.
+
+**Local (same node):**
+```bash
+# terminal 1 — bring the server up (stays foreground until Ctrl-C):
+MODEL_PATH=/root/models/Qwen3-8B GPUS=0 PORT=30000 bash scripts/serve_sglang.sh
+
+# terminal 2 — once it prints "server is UP":
+PORT=30000 bash scripts/test_inference.sh
+# override the prompt/length if you like:
+PORT=30000 PROMPT="What is 2+2?" MAX_TOKENS=32 bash scripts/test_inference.sh
+```
+
+**Remote node.** `serve_sglang.sh` binds `0.0.0.0` by default, so the endpoint is reachable
+from other nodes out of the box — leave `HOST` alone on the serve side. On the client side,
+`test_inference.sh`'s `HOST` is just the address it curls, so point it at the GPU node:
+```bash
+# on the GPU node:
+MODEL_PATH=/root/models/Qwen3-8B GPUS=0 PORT=30000 bash scripts/serve_sglang.sh
+
+# from the trainer/workstation node:
+HOST=<gpu-node-ip> PORT=30000 bash scripts/test_inference.sh
+```
+The same `http://<gpu-node-ip>:30000/generate` URL is exactly what you hand the trainer via
+`--rm-url` (single teacher) or the right-hand side of an `--opd-teacher-urls` entry (routing) —
+teachers on remote nodes are fully supported.
+
+> **Security note:** SGLang has no built-in auth. `0.0.0.0` exposes the endpoint to anything
+> that can route to the node. On a shared/untrusted network, bind the private interface
+> (`HOST=<cluster-ip>`) or front it with an SSH tunnel instead.
+
+`serve_teacher.sh` is the OPD-specific sibling of `serve_sglang.sh` — same mechanics, plus a
+teacher label used in log filenames and health messages.
+
+## Agentic training (tau-bench) with OPD
+
+OPD is orthogonal to the rollout, so it composes with slime's **agentic** examples: the student
+runs a multi-turn, tool-using episode and a teacher endpoint distills it. The ready-made setup
+targets `examples/tau-bench`:
+
+- `run-tau-bench-opd.sh` — training script with two modes:
+  - **Mode B** (default) — GRPO on tau-bench task success **plus** the teacher KL (RL + distillation).
+  - **Mode A** — pure distillation on tau-bench trajectories (env reward ignored).
+- `tau_bench_opd.py` — glue: a **rollout sample hook** (`opd_teacher_hook`) that scores the
+  student's tokens with the teacher and sets `teacher_log_probs`, leaving the env task reward to
+  flow through GRPO's normal (normalized) path. No `--custom-rm-path`, no edits to the upstream
+  tau-bench example.
+
+```bash
+# 1) teacher (must share the student's tokenizer):
+MODEL_PATH=/root/Qwen3-32B GPUS=3 PORT=30000 bash scripts/serve_sglang.sh
+# 2) train (task reward + KL):
+TEACHER_URL=http://127.0.0.1:30000/generate bash run-tau-bench-opd.sh
+```
+
+Full explanation — how the teacher is queried via a rollout hook, why the multi-turn `loss_mask`
+already makes the OPD KL correct, verification checklist, and how to adapt the hook to **any**
+gym — is in **[TAU_BENCH_OPD.md](TAU_BENCH_OPD.md)**.
+
+**New to this?** Follow **[TESTING_BABY_STEPS.md](TESTING_BABY_STEPS.md)** — a rung-by-rung ladder
+from "does an SGLang endpoint answer" up to agentic multi-teacher OPD, where each step is cheap
+and independently verifiable.
 
 
 # Preliminary Results
