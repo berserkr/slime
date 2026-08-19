@@ -47,6 +47,22 @@ group-normalized reward path. It reuses layer 2's `_resolve_teacher_url`, so mul
 routing works there for free. The glue (`tau_bench_opd.py`, `run-tau-bench-opd.sh`) lives
 entirely in this example directory; see [`TAU_BENCH_OPD.md`](TAU_BENCH_OPD.md).
 
+### How the axes combine (MOPD supports both rollout types)
+
+Teacher count and rollout type are **independent**. MOPD (multiple teachers) is orthogonal to
+whether the student generates a one-shot completion or a multi-turn agent episode — the same
+`_resolve_teacher_url` serves all four cells:
+
+| | **single teacher** (`--rm-url`) | **multiple teachers / MOPD** (`--opd-teacher-urls`) |
+|---|---|---|
+| **regular data** | base OPD example (`run-qwen3-8B-opd.sh`) | MOPD as shipped (`MOPD_GETTING_STARTED.md`) |
+| **agentic rollout** | tau-bench OPD, single `--rm-url` | tau-bench OPD + `--opd-teacher-urls` (Rung 7) |
+
+The only thing that differs by **row** is *how* `teacher_log_probs` is attached: `reward_func`
+when the reward slot is free (regular data), a sample hook when the agent already filled
+`sample.reward` (agentic). The **column** — which teacher scores each sample — is the same code
+either way. Constant across all cells: every teacher must share the student's tokenizer/vocab.
+
 ---
 
 ## Summary of what changed

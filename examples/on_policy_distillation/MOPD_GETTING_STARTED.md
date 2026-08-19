@@ -15,6 +15,16 @@ Because slime's OPD penalty is already applied **per sample**
 almost free: the loss/advantage path needs **zero changes**. All we add is a way to pick
 a teacher URL per sample.
 
+> **MOPD works for both non-agentic and agentic rollouts.** Routing is just
+> `_resolve_teacher_url(args, sample)`, which reads only `sample.metadata[routing_key]` —
+> it doesn't care whether `sample` came from a one-shot completion or a multi-turn agent
+> episode. This guide uses a **plain prompt dataset** (the common case). For an **agentic**
+> student (e.g. tau-bench), the same routing applies unchanged — the only difference is that
+> `teacher_log_probs` is attached by a rollout sample hook instead of the reward function
+> (because the agent already fills `sample.reward`). See
+> [`TAU_BENCH_OPD.md`](TAU_BENCH_OPD.md), and the two-axes table in
+> [`MT_PATCH.md`](MT_PATCH.md).
+
 ---
 
 ## The mental model
